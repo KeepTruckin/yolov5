@@ -179,7 +179,7 @@ class TFConv2d(keras.layers.Layer):
         self.conv = keras.layers.Conv2D(filters=c2,
                                         kernel_size=k,
                                         strides=s,
-                                        padding='VALID',
+                                        padding="VALID" if g == 1 else "SAME",
                                         use_bias=bias,
                                         kernel_initializer=keras.initializers.Constant(
                                             w.weight.permute(2, 3, 1, 0).numpy()),
@@ -200,7 +200,7 @@ class TFBottleneckCSP(keras.layers.Layer):
         self.cv3 = TFConv2d(c_, c_, 1, 1, bias=False, w=w.cv3)
         self.cv4 = TFConv(2 * c_, c2, 1, 1, w=w.cv4)
         self.bn = TFBN(w.bn)
-        self.act = lambda x: keras.activations.swish(x)
+        self.act = lambda x: keras.activations.relu(x, alpha=0.01)
         self.m = keras.Sequential([TFBottleneck(c_, c_, shortcut, g, e=1.0, w=w.m[j]) for j in range(n)])
 
     def call(self, inputs):
@@ -302,12 +302,12 @@ class TFDetect(keras.layers.Layer):
                 y = tf.sigmoid(x[i])
                 grid = tf.transpose(self.grid[i], [0, 2, 1, 3]) - 0.5
                 anchor_grid = tf.transpose(self.anchor_grid[i], [0, 2, 1, 3]) * 4
-                xy = (y[..., 0:2] * 2 + grid) * self.stride[i]  # xy
-                wh = y[..., 2:4] ** 2 * anchor_grid
+                xy = (y[:, :, :, 0:2] * 2 + grid) * self.stride[i]  # xy
+                wh = y[:, :, :, 2:4] ** 2 * anchor_grid
                 # Normalize xywh to 0-1 to reduce calibration error
                 xy /= tf.constant([[self.imgsz[1], self.imgsz[0]]], dtype=tf.float32)
                 wh /= tf.constant([[self.imgsz[1], self.imgsz[0]]], dtype=tf.float32)
-                y = tf.concat([xy, wh, y[..., 4:]], -1)
+                y = tf.concat([xy, wh, y[:, :, :, 4:]], -1)
                 z.append(tf.reshape(y, [-1, self.na * ny * nx, self.no]))
 
         return tf.transpose(x, [0, 2, 1, 3]) if self.training else (tf.concat(z, 1), x)
@@ -437,7 +437,7 @@ class TFModel:
 
         # Add TensorFlow NMS
         if tf_nms:
-            boxes = self._xywh2xyxy(x[0][..., :4])
+            boxes = self._xywh2xyxy(x[0][:, :, :4])
             probs = x[0][:, :, 4:5]
             classes = x[0][:, :, 5:]
             scores = probs * classes
@@ -508,7 +508,7 @@ class AgnosticNMS(keras.layers.Layer):
 def activations(act=nn.SiLU):
     # Returns TF activation from input PyTorch activation
     if isinstance(act, nn.LeakyReLU):
-        return lambda x: keras.activations.relu(x, alpha=0.1)
+        return lambda x: keras.activations.relu(x, alpha=0.01)
     elif isinstance(act, nn.Hardswish):
         return lambda x: x * tf.nn.relu6(x + 3) * 0.166666667
     elif isinstance(act, (nn.SiLU, SiLU)):
