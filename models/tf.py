@@ -175,7 +175,7 @@ class TFConv2d(keras.layers.Layer):
     # Substitution for PyTorch nn.Conv2D
     def __init__(self, c1, c2, k, s=1, g=1, bias=True, w=None):
         super().__init__()
-        assert g == 1, "TF v2.2 Conv2D does not support 'groups' argument"
+        #assert g == 1, "TF v2.2 Conv2D does not support 'groups' argument"
         self.conv = keras.layers.Conv2D(filters=c2,
                                         kernel_size=k,
                                         strides=s,
